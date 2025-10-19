@@ -1,9 +1,10 @@
-name: Flutter Integration Tests (Headless Emulator)
+name: Flutter Native Integration Tests with Headless emulator
 
 on:
   push:
-    branches: [master ]
-    
+    branches: [ main, master ]
+  pull_request:
+
 concurrency:
   group: integration-${{ github.ref }}
   cancel-in-progress: true
@@ -13,29 +14,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
-    permissions:
-      contents: read
-
     steps:
-      # 1) Checkout code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Java for Android/Gradle
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3) Install Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # 4) Cache Gradle (speeds up builds)
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -46,35 +40,35 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # 5) Get Flutter deps early (also warms pub cache)
       - name: Flutter pub get
         run: flutter pub get
 
-      # 6) Launch an Android emulator (headless) and run tests inside it
       - name: Run integration tests on headless emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30                  # 30+ is fine; bump to 33/34 if you need
+          api-level: 33                # 30+ is fine; 33 is modern/stable
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          script: |
-            adb devices
-            flutter doctor -v
-            # Optional: build once to warm Gradle/artifacts (faster tests)
-            flutter build apk --debug
-            # Run integration_test/ suite against the booted emulator
-            flutter test integration_test/app_test.dart -d emulator-5554
           emulator-options: >-
-            -no-window
+            -no-snapshot
+            -no-snapshot-save
             -no-boot-anim
-            -gpu swiftshader_indirect
             -noaudio
+            -gpu swiftshader_indirect
+            -no-window
+          disable-animations: true
+          script: |
+            set -euxo pipefail
+            adb wait-for-device
+            flutter doctor -v
 
-      # 7) (Optional) Upload results if you save junit/json
-      # - name: Upload test results
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: integration-test-results
-      #     path: build/**/test-results/**/*
+            # Optional warm-up build
+            flutter build apk --debug
 
+            # Run tests (auto-detect emulator ID)
+            DEVICE_ID=$(adb devices | awk 'NR==2 {print $1}')
+            flutter test integration_test -d "$DEVICE_ID"
+
+            # Gracefully kill emulator to avoid teardown flake
+            adb -s "$DEVICE_ID" emu kill || true
