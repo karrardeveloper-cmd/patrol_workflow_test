@@ -31,7 +31,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('1'), findsOneWidget);
 
-    // Tap a few more times to be sure state updates correctly hello
+    // Tap a few more times to be sure state updates correctly hello d
     await tester.tap(fab);
     await tester.tap(fab);
     await tester.pumpAndSettle();
