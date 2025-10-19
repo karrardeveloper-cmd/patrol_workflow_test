@@ -5,13 +5,18 @@ on:
     branches: [ main, master ]
   pull_request:
 
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -35,20 +40,19 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: flutter pub get
+      - name: Flutter pub get
         run: flutter pub get
 
       - name: Run integration tests on headless emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          # Lighter image = faster, fewer offline issues
-          api-level: 30
-          target: default                # avoid google_apis for reliability
+          api-level: 30                 # lighter + reliable under SW rendering
+          target: default               # avoid google_apis for speed/stability
           arch: x86_64
           profile: pixel_4
           force-avd-creation: true
-          boot-timeout: 1200             # give it time when SW-rendering
-          disable-animations: true
+          disable-linux-hw-accel: true  # action will add -accel off; don't duplicate
+          emulator-boot-timeout: 1200   # <-- correct key
           emulator-options: >-
             -no-snapshot
             -no-snapshot-save
@@ -56,48 +60,45 @@ jobs:
             -noaudio
             -gpu swiftshader_indirect
             -no-window
-            -accel off
+            -no-metrics
+          disable-animations: true
+          pre-emulator-launch-script: |
+            # Keep adb healthy before launch
+            adb kill-server || true
+            adb start-server
           script: |
             set -euxo pipefail
 
-            # Make sure adb is healthy
-            adb start-server || true
-
-            # Wait for device to appear
+            # Wait for the emulator device to appear
             adb wait-for-device
 
-            # Sometimes the device is "offline" right after boot; bounce adb
-            adb devices || true
-            adb kill-server || true
-            adb start-server
-            adb wait-for-device
+            # If it's "offline", bounce adb once
+            if adb devices | grep -q "offline"; then
+              adb kill-server || true
+              adb start-server
+              adb wait-for-device
+            fi
 
-            # Wait until sys.boot_completed == 1 (hard wait)
+            # Hard wait until sys.boot_completed == 1
             for i in $(seq 1 120); do
-              BOOTED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-              if [ "$BOOTED" = "1" ]; then
-                echo "Emulator fully booted."
-                break
-              fi
-              echo "Waiting for boot... ($i/120)"
-              sleep 5
+              booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              [ "$booted" = "1" ] && echo "Emulator booted" && break
+              echo "Waiting for boot... ($i/120)"; sleep 5
             done
 
-            # Final sanity: if still offline, fail early
-            adb shell getprop ro.build.version.release
-
-            # Quality-of-life: kill animations again & unlock
+            # QoL tuning: kill animations; unlock screen
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
             adb shell settings put global animator_duration_scale 0
             adb shell input keyevent 82 || true
 
             flutter doctor -v
+            # Warm Gradle/artifacts (optional but speeds up tests)
             flutter build apk --debug
 
-            # Run the integration tests (auto-pick the only emulator)
+            # Run all integration tests in integration_test/
             flutter devices
             flutter test integration_test/app_test.dart
 
-            # Tear down cleanly to avoid runner teardown flake
+            # Clean teardown to avoid flaky shutdown
             adb emu kill || true
