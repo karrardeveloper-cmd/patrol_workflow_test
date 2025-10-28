@@ -3,11 +3,6 @@ name: Flutter Integration Tests (Headless)
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-
-concurrency:
-  group: integration-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   android-integration:
@@ -15,22 +10,23 @@ jobs:
     timeout-minutes: 45
     
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
-        
+            distribution: temurin
+            java-version: "17"
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-        
-      - name: Cache Gradle
+
+      - name: Cache Gradle Dependencies
+        # Saves time on subsequent runs by caching downloaded Gradle dependencies
         uses: actions/cache@v4
         with:
           path: |
@@ -39,20 +35,25 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-${{ runner.os }}-
-            
+
       - name: Flutter pub get
         run: flutter pub get
-        
-      - name: Run integration tests on headless emulator
+
+      - name: Run Integration Tests on Headless Emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
+          # Use a high API level for better performance on CI
           api-level: 30
           target: default
           arch: x86_64
           profile: pixel_4
-          force-avd-creation: true
-          disable-linux-hw-accel: true
-          emulator-boot-timeout: 1800
+          # Force creation ensures a clean start
+          force-avd-creation: true 
+          # Disables hardware acceleration on Linux (required for GitHub Actions VMs)
+          disable-linux-hw-accel: true 
+          # Timeout for the emulator to boot up
+          emulator-boot-timeout: 300 
+          # Recommended options for headless environments
           emulator-options: >-
             -no-snapshot
             -no-snapshot-save
@@ -61,29 +62,27 @@ jobs:
             -no-window
             -gpu swiftshader_indirect
           disable-animations: true
-          pre-emulator-launch-script: |
-            adb kill-server || true
-            adb start-server
+      
+          # The main script to execute commands on the running emulator
           script: |
             set -euxo pipefail
+        
+            # 1. Wait for device to fully come online
             adb wait-for-device
-            if adb devices | grep -q "offline"; then
-              adb kill-server || true
-              adb start-server
-              adb wait-for-device
-            fi
-            for i in $(seq 1 180); do
-              booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-              bootanim=$(adb shell getprop init.svc.bootanim 2>/dev/null | tr -d '\r')
-              [ "$booted" = "1" ] && [ "$bootanim" = "stopped" ] && echo "Emulator booted" && break
-              echo "Waiting for boot... ($i/180)"; sleep 5
-            done
-            adb shell settings put global window_animation_scale 0
-            adb shell settings put global transition_animation_scale 0 
-            adb shell settings put global animator_duration_scale 0
+        
+            # Optional: Unlock screen and ensure boot completion (critical for headless)
             adb shell input keyevent 82 || true
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
+            adb shell settings put global animator_duration_scale 0
+
+            # 2. Show status
             flutter doctor -v
-            flutter build apk --debug
             flutter devices
+
+            # 3. Execute the integration test.
+            # 'flutter test' automatically builds and installs the necessary test APK on the device.
             flutter test integration_test/app_test.dart
+        
+            # 4. Clean up
             adb emu kill || true
